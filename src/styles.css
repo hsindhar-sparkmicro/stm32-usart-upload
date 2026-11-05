@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #121510;
+  --color-surface: #1c2118;
+  --color-fg: #e7eedd;
+  --color-muted: #939e86;
+  --color-line: #343b2e;
+  --color-signal: #d6f25c;
+  --color-signal-ink: #1a2208;
+  --color-fault: #e36b4f;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+@layer base {
+  html,
+  body {
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled),
+  label:has(input[type="file"]) {
+    cursor: pointer;
+  }
+}
