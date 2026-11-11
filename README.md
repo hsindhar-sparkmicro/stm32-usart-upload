@@ -13,6 +13,17 @@ USART2 on STM32G0 and on most other series:
 
 Hold BOOT0 and reset before the tool syncs. On STM32G0 the pin is ignored while option bit `nBOOT_SEL` is 1. Clear that bit once over SWD, or set `nBOOT0` to 0. Flash base defaults to `0x08000000`.
 
+## Desktop window
+
+Flet window with a firmware picker, serial-port list, progress bar, and the CLI command for the same choices.
+
+```bash
+pip install -r requirements.txt
+python3 flet_app.py
+```
+
+On Linux the port list is `/dev/ttyUSB*` and `/dev/ttyACM*`. On Windows, install `pyserial` so the list comes from the device manager (`pip install pyserial`). The command box updates as you change the port, file, address, or checkboxes. Copy pastes that exact line.
+
 ## CLI
 
 No packages. Linux and macOS use the system serial driver. Windows uses pyserial if it is already installed.
@@ -23,7 +34,7 @@ python3 public/usart2-upload.py -p COM5 -a 0x08000000 app.hex
 python3 public/usart2-upload.py --self-test
 ```
 
-`--verify` reads the image back before Go. `--no-erase` skips the mass erase.
+`--verify` is on by default. `--no-verify` skips the read-back. `--no-go` writes the image and leaves the core stopped.
 
 ## Web page
 

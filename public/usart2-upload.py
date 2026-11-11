@@ -242,29 +242,40 @@ def go(link: StreamLink, addr: int) -> None:
     read_ack(link, 1.0, "go address")
 
 
-def upload(link: StreamLink, image: bytes, base: int, verify: bool, start: bool, log) -> dict:
+def upload(link: StreamLink, image: bytes, base: int, verify: bool, start: bool, log, progress=None) -> dict:
     if base % 8:
         raise ProtocolError("Base address must be 8-byte aligned.")
     if not image:
         raise ProtocolError("Image is empty.")
     if len(image) > 2 * 1024 * 1024:
         raise ProtocolError("Image is over 2 MB. Refusing to write.")
+
+    def tick(phase: str, done: int, total: int) -> None:
+        if progress:
+            progress(phase, done, total)
+
     image = pad_image(image)
+    span = len(image) * (2 if verify else 1)
+    tick("sync", 0, 0)
     log("Sync 0x7F at 115200")
     sync_bootloader(link)
     log("Bootloader answered")
+    tick("identify", 0, 0)
     version, commands = cmd_get(link)
     log("Bootloader version {:02x}".format(version))
     chip_id = cmd_get_id(link)
     log(f"Chip {chip_name(chip_id)} (0x{chip_id:x})")
+    tick("erase", 0, 0)
     log("Mass erase")
     mass_erase(link, commands)
     log("Erase done")
     for off in range(0, len(image), CHUNK):
         chunk = image[off : off + CHUNK]
         write_chunk(link, base + off, chunk)
-        if off == 0 or off + CHUNK >= len(image) or (off // CHUNK) % 8 == 0:
-            log(f"  {off + len(chunk)}/{len(image)}")
+        written = off + len(chunk)
+        tick("write", written, span)
+        if off == 0 or written >= len(image) or (off // CHUNK) % 8 == 0:
+            log(f"  {written}/{len(image)}")
     log(f"Wrote {len(image)} bytes at 0x{base:08x}")
     if verify:
         for off in range(0, len(image), CHUNK):
@@ -272,16 +283,19 @@ def upload(link: StreamLink, image: bytes, base: int, verify: bool, start: bool,
             got = read_chunk(link, base + off, len(chunk))
             if got != chunk:
                 raise ProtocolError(f"Verify failed at 0x{base + off:08x}")
+            tick("verify", len(image) + off + len(chunk), span)
         log("Verify matched")
     started = False
     if start:
         if CMD_GO not in commands:
             log("No Go command; image is written but the core was not started")
         else:
+            tick("go", span, span)
             log(f"Go 0x{base:08x} — starting the application")
             go(link, base)
             started = True
             log("Device left the bootloader and is running the new image")
+    tick("done", span, span or 1)
     return {"chip_id": chip_id, "bytes": len(image), "started": started}
 
 
@@ -375,8 +389,46 @@ class PySerialLink(StreamLink):
         super().__init__(ser.fileno())
 
 
-def flash_port(path: str, baud: int, parities: list[str], image: bytes, base: int, verify: bool, start: bool) -> None:
-    log = lambda msg: print(msg, file=sys.stderr)
+def format_cli(
+    port: str,
+    image: str,
+    address: str | None = None,
+    baud: int = 115200,
+    parity: str = "auto",
+    verify: bool = True,
+    start: bool = True,
+) -> str:
+    """The same invocation the CLI would use for these choices."""
+    import shlex
+
+    parts = ["python3", "usart2-upload.py", "-p", shlex.quote(port or "PORT")]
+    if baud != 115200:
+        parts += ["-b", str(int(baud))]
+    if address:
+        parts += ["-a", shlex.quote(address)]
+    if parity != "auto":
+        parts += ["--parity", parity]
+    if not verify:
+        parts.append("--no-verify")
+    if not start:
+        parts.append("--no-go")
+    parts.append(shlex.quote(image or "firmware.bin"))
+    return " ".join(parts)
+
+
+def flash_port(
+    path: str,
+    baud: int,
+    parities: list[str],
+    image: bytes,
+    base: int,
+    verify: bool,
+    start: bool,
+    log=None,
+    progress=None,
+) -> dict:
+    if log is None:
+        log = lambda msg: print(msg, file=sys.stderr)
     last: Exception | None = None
     for parity in parities:
         framing = {"none": "8N1", "even": "8E1", "odd": "8O1"}[parity]
@@ -389,15 +441,22 @@ def flash_port(path: str, baud: int, parities: list[str], image: bytes, base: in
             fd = open_serial(path, baud, parity)
             link = StreamLink(fd)
             close = lambda: os.close(fd)
+        result = None
         try:
-            upload(link, image, base, verify, start, log)
-            return
+            result = upload(link, image, base, verify, start, log, progress)
         except SyncError as exc:
             last = exc
             log(str(exc).split(".")[0] + f" on {framing}")
         finally:
-            close()
-    raise SystemExit(last or SyncError("no reply"))
+            try:
+                close()
+            except OSError:
+                # Go resets the MCU and some adapters drop the port as it happens.
+                if result is None:
+                    raise
+        if result is not None:
+            return result
+    raise last or SyncError("no reply")
 
 
 def run_mock(link: StreamLink, mem: bytearray, base: int, done: threading.Event) -> None:
@@ -467,6 +526,10 @@ def self_test() -> None:
     assert mem[300:304] == bytes([0xFF] * 4)
     host.close()
     dev.close()
+    plain = format_cli("/dev/ttyUSB0", "app.bin", address="0x08000000")
+    assert plain == "python3 usart2-upload.py -p /dev/ttyUSB0 -a 0x08000000 app.bin"
+    flagged = format_cli("COM5", "my app.hex", baud=57600, parity="even", verify=False, start=False)
+    assert flagged == "python3 usart2-upload.py -p COM5 -b 57600 --parity even --no-verify --no-go 'my app.hex'"
     print("self-test ok")
 
 
